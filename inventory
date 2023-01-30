@@ -1,0 +1,5 @@
+[all:vars]
+ansible_network_os=cisco.fmcansible.fmc
+
+[all]
+<fmc ip> ansible_user=<username> ansible_password=<password> ansible_httpapi_port=443 ansible_httpapi_use_ssl=True ansible_httpapi_validate_certs=True

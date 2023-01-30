@@ -1,0 +1,133 @@
+# This playbook upgrades the FTD image on a firewall, with the following flow:
+# Image Distribution -> Readiness Checks -> Upgrading Firewall -> Post Checks
+- hosts: all
+  connection: httpapi
+  tasks:
+    - name: Get Domain
+      cisco.fmcansible.fmc_configuration:
+        operation: getAllDomain
+        register_as: domain
+
+# Get Devices for Upgrade package (note: for HA pair, only grab primary node)
+    - name: Get FTDv-3
+      cisco.fmcansible.fmc_configuration:
+        operation: getAllDevice
+        path_params:
+          domainUUID: '{{ domain[0].uuid }}'
+        filters:
+          name: FTDv-3
+        register_as: FW3
+
+# Get Upgrade Package
+    - name: Get FTD Upgrade Images available
+      cisco.fmcansible.fmc_configuration:
+        operation: getAllUpgradePackage
+        register_as: images
+
+# Trigger image distribution for FW (use most recent one)
+    - name: HA Upgrade - Image Distribution
+      cisco.fmcansible.fmc_configuration:
+        operation: createUpgrade
+        data:
+          upgradePackage:
+            id: "{{ images[1].id }}"
+            type: "UpgradePackage"
+          targets:
+            - id: "{{ FW3[0].id }}"
+              type: "Device"
+              name: "{{ FW3[0].name }}"
+          pushUpgradeFileOnly: true
+        register_as: distribution_job
+      vars:
+        ansible_command_timeout: 60
+
+# Check status of image distribution
+    - name: Image Distribution Check
+      cisco.fmcansible.fmc_configuration:
+        operation: getTaskStatus
+        path_params:
+          objectId: '{{ distribution_job.metadata.task.id }}'
+          domainUUID: '{{ domain[0].uuid }}'
+        register_as: distribution_status
+      until: distribution_status.status is match("COMPLETED")
+      retries: 100
+      delay: 10
+
+    - name: Stop the playbook if the distribution failed
+      fail:
+        msg: 'Distribution failed. Status: {{ distribution_status.status }}'
+      when: distribution_status.status is not match("COMPLETED")
+
+# Run Readiness Checks
+    - name: HA Upgrade - Readiness Check
+      cisco.fmcansible.fmc_configuration:
+        operation: createUpgrade
+        data:
+          upgradePackage:
+            id: "{{ images[0].id }}"
+            type: "UpgradePackage"
+          targets:
+            - id: "{{ FW3[0].id }}"
+              type: "Device"
+              name: "{{ FW3[0].name }}"
+          readinessCheckOnly: true
+        register_as: readiness_job
+      vars:
+        ansible_command_timeout: 60
+
+# Check status of readiness check
+    - name: Readiness Check
+      cisco.fmcansible.fmc_configuration:
+        operation: getTaskStatus
+        path_params:
+          objectId: '{{ readiness_job.metadata.task.id }}'
+          domainUUID: '{{ domain[0].uuid }}'
+        register_as: readiness_status
+      until: readiness_status.status is match("COMPLETED")
+      retries: 100
+      delay: 10
+
+    - name: Stop the playbook if the readiness check failed
+      fail:
+        msg: 'Distribution failed. Status: {{ readiness_status.status }}'
+      when: readiness_status.status is not match("COMPLETED")
+
+# Start HA FW Upgrade
+    - name: HA Upgrade - Upgrade
+      cisco.fmcansible.fmc_configuration:
+        operation: createUpgrade
+        data:
+          upgradePackage:
+            id: "{{ images[0].id }}"
+            type: "UpgradePackage"
+          targets:
+            - id: "{{ FW3[0].id }}"
+              type: "Device"
+              name: "{{ FW3[0].name }}"
+          readinessCheckOnly: false
+        register_as: upgrade_job
+      vars:
+        ansible_command_timeout: 60
+
+# Check status of upgrade job
+    - name: Upgrade Check
+      cisco.fmcansible.fmc_configuration:
+        operation: getTaskStatus
+        path_params:
+          objectId: '{{ upgrade_job.metadata.task.id }}'
+          domainUUID: '{{ domain[0].uuid }}'
+        register_as: upgrade_status
+      until: upgrade_status.status is not defined or upgrade_status.status is match("COMPLETED")
+      retries: 1000
+      delay: 30
+
+# Token can expire if playbook runs past 30 minutes, please use task id in another checking playbook
+    - name: Stop the playbook if token expired
+      fail:
+        msg: 'Token Expired for job: {{ upgrade_job.metadata.task.id }}. Job is viewable from dashboard, or the id can be used in another playbook!'
+      when: upgrade_status.status is not defined
+
+    - name: Stop the playbook if the upgrade check failed
+      fail:
+        msg: 'Distribution failed. Status: {{ upgrade_status.status }}'
+      when: upgrade_status.status is not match("COMPLETED")

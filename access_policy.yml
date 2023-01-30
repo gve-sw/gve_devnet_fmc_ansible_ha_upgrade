@@ -1,0 +1,97 @@
+# This playbook defines an access policy, creates an access rule in the new policy, and assigns 2 Firewalls to the new policy
+- hosts: all
+  connection: httpapi
+  tasks:
+    - name: Get Domain
+      cisco.fmcansible.fmc_configuration:
+        operation: getAllDomain
+        register_as: domain
+
+# Define an Access Policy, with Default Intrusion Policy
+    - name: Find an intrusion policy
+      cisco.fmcansible.fmc_configuration:
+        operation: getAllIntrusionPolicy
+        path_params:
+          domainUUID: '{{ domain[0].uuid }}'
+        register_as: policies
+
+    - name: Create Access Policy (using Intrusion Policy as Default Rule)
+      cisco.fmcansible.fmc_configuration:
+        operation: createAccessPolicy
+        data:
+          type: AccessPolicy
+          name: NGFW-Access-Policy28
+          defaultAction:
+            action: PERMIT
+            intrusionPolicy:
+              id: "{{ policies[0].id }}"
+              type: "{{ policies[0].type }}"
+            type: defaultAction
+        path_params:
+          domainUUID: '{{ domain[0].uuid }}'
+        register_as: access_policy
+
+# Create Access Rule
+    - name: create auxilary network object
+      cisco.fmcansible.fmc_configuration:
+        operation: createMultipleNetworkObject
+        path_params:
+          domainUUID: '{{ domain[0].uuid }}'
+        data:
+          name: "ansible-test-network466"
+          value: "192.22.22.0/24"
+          type: "networkobject"
+        register_as: net1
+
+    - name: Create an access rule allowing traffic from Cisco DevNet, assign to access policy
+      cisco.fmcansible.fmc_configuration:
+        operation: createMultipleAccessRule
+        data:
+          name: AllowCiscoTraffic8
+          type: accessrule
+          enabled: true
+          sourceNetworks:
+            objects:
+              - id: '{{ net1.id }}'
+                name: '{{net1.name }}'
+                type: '{{ net1.type }}'
+          action: ALLOW
+        path_params:
+          containerUUID: '{{ access_policy.id }}'
+          domainUUID: '{{ domain[0].uuid }}'
+
+# Assign devices to new access policies
+    - name: Get FTDv-3
+      cisco.fmcansible.fmc_configuration:
+        operation: getAllDevice
+        path_params:
+          domainUUID: '{{ domain[0].uuid }}'
+        filters:
+          name: FTDv-3
+        register_as: FW3
+
+    - name: Get FTDv-4
+      cisco.fmcansible.fmc_configuration:
+        operation: getAllDevice
+        path_params:
+          domainUUID: '{{ domain[0].uuid }}'
+        filters:
+          name: FTDv-4
+        register_as: FW4
+
+    - name: Assign FTD's to new access policy
+      cisco.fmcansible.fmc_configuration:
+        operation: createPolicyAssignment
+        path_params:
+          objectId: '{{ access_policy.id }}'
+          domainUUID: '{{ domain[0].uuid }}'
+        data:
+          type: PolicyAssignment
+          policy:
+            type: AccessPolicy
+            id: '{{ access_policy.id }}'
+          targets:
+            - id: '{{ FW3[0].id }}'
+              type: Device
+            - id: '{{ FW4[0].id }}'
+              type: Device
